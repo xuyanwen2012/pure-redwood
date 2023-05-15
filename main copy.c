@@ -1,9 +1,12 @@
 #include <float.h>
 #include <math.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 
 #include "float4.h"
+
+#define REDWOOD_DEBUG
 
 float4 generate_random_float4(void) {
   float4 random_float4;
@@ -75,58 +78,125 @@ enum {
   M = 8,
   MAX_NODES = 2048,
   MAX_STACK_SIZE = 128,
-  LEAF_SIZE = 32,
 };
 
-typedef struct {
-  int left;
-  int right;
-} Node;
+// // We want user write this
+// typedef struct {
+//   int left;
+//   int right;
+//   float4 data;
+// } Node;
+
+typedef struct BranchNode {
+  struct TreeNode* left;
+  struct TreeNode* right;
+  // int axis;  // I don't think we need this
+  float4 data;
+} BranchNode;
+
+typedef struct LeafNode {
+  float4* head_addr;
+  int count;
+} LeafNode;
+
+typedef enum { BRANCH, LEAF } NodeType;
+
+typedef struct TreeNode {
+  NodeType type;
+
+  // DEBUG ONLY
+#ifdef REDWOOD_DEBUG
+  int uid;
+#endif
+
+  union {
+    BranchNode branch;
+    LeafNode leaf;
+  };
+} TreeNode;
 
 float4 in_data[N];
 
-int v_acc[MAX_NODES];
 int next_node = 0;
-Node children[MAX_NODES];
 
-// int new_node(const float4 point) {
-//   if (next_node < MAX_NODES) {
-//     const int node_uid = next_node;
-//     // node_data[node_uid] = point;
-//     children[node_uid].left = -1;
-//     children[node_uid].right = -1;
-//     ++next_node;
-//     return node_uid;
-//   }
-
-//   printf("node exceed");
-//   return -1;
-// }
-
-int new_node(const int left, const int right) {
-  if (next_node < MAX_NODES) {
-    const int node_uid = next_node;
-    children[node_uid].left = left;
-    children[node_uid].right = right;
-    ++next_node;
-    return node_uid;
-  }
-
-  printf("node exceed");
-  return -1;
+TreeNode* new_branch_node(void) {
+  TreeNode* node = malloc(sizeof(TreeNode));
+  node->type = BRANCH;
+#ifdef REDWOOD_DEBUG
+  node->uid = next_node++;
+#endif
+  node->branch.left = NULL;
+  node->branch.right = NULL;
+  // node->branch.axis = -1;
+  node->branch.data.x = -1.0f;
+  node->branch.data.y = -1.0f;
+  node->branch.data.z = -1.0f;
+  node->branch.data.w = -1.0f;
+  return node;
 }
 
-int build_tree(const int left_idx, const int right_idx, const int depth) {
-  int node_id = new_node(left_idx, right_idx);
-
-  if (right_idx - left_idx <= LEAF_SIZE) {
-  } else {
-    
-  }
+TreeNode* new_leaf_node(void) {
+  TreeNode* node = malloc(sizeof(TreeNode));
+  node->type = LEAF;
+#ifdef REDWOOD_DEBUG
+  node->uid = next_node++;
+#endif
+  node->leaf.head_addr = NULL;
+  node->leaf.count = 0;
+  return node;
 }
 
 void print_float4(const float4 p) {
   printf("(%f,\t%f,\t%f,\t%f)", p.x, p.y, p.w, p.z);
+}
+
+TreeNode* build_tree(float4* data, const int low, const int high,
+                     const int depth, const int max_leaf_size) {
+  TreeNode* node = NULL;
+
+  const int count = high - low;
+  if (count <= max_leaf_size) {
+    node = new_leaf_node();
+
+    node->leaf.count = count;
+    node->leaf.head_addr = &data[low];
+
+  } else {
+    node = new_branch_node();
+
+    const int axis = depth % 4;
+    const int mid = (low + high) / 2;
+
+    nth_element(data, low, high, mid, axis);
+
+    node->branch.data = data[mid];
+    // node->branch.axis = axis;
+    node->branch.left = build_tree(data, low, mid, depth + 1, max_leaf_size);
+    node->branch.right =
+        build_tree(data, mid + 1, high, depth + 1, max_leaf_size);
+  }
+
+  return node;
+}
+
+void dfs(TreeNode* node, const int depth) {
+  if (node == NULL) {
+    return;
+  } else if (node->type == LEAF) {
+    float4* my = node->leaf.head_addr;
+    ptrdiff_t diff = my - &in_data[0];
+
+    printf("(l) head:%p (%td)\tcount:%d\n", (void*)node->leaf.head_addr, diff,
+           node->leaf.count);
+  } else if (node->type == BRANCH) {
+    dfs(node->branch.left, depth + 1);
+    dfs(node->branch.right, depth + 1);
+
+    const int axis = depth % 4;
+    printf("(b) axis:%d\tpoint:", axis);
+    print_float4(node->branch.data);
+    printf("\n");
+  }
 }
 
 int main(void) {
@@ -136,22 +206,11 @@ int main(void) {
     in_data[i] = generate_random_float4();
   }
 
-  int start = 0;
-  int end = N;
-  int mid = (start + end) / 2;
+  // we want to make this a dynamic parameter
+  const int max_leaf_size = 16;
+  TreeNode* root = build_tree(in_data, 0, N, 0, max_leaf_size);
 
-  int num_nodes_created = 1024;
-
-  // // nth_element(dat1, start, end - 1, mid, 0);
-  // for (int i = 0; i < N; ++i) {
-  //   printf("%d:\t", i);
-  //   print_float4(in_data[i]);
-  //   printf("\n");
-  // }
-
-  for (int i = 0; i < num_nodes_created; ++i) {
-    printf("%d:\t%d\n", i, v_acc[i]);
-  }
+  dfs(root, 0);
 
   return 0;
 }
