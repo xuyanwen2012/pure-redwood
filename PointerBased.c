@@ -1,6 +1,5 @@
 #include <float.h>
 #include <math.h>
-#include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,46 +20,36 @@ float4 generate_random_float4(void) {
 }
 
 enum {
-  N = 10240,
+  N = 1024 * 10,
   M = 8,
   MAX_NODES = 2048,
   MAX_STACK_SIZE = 128,
 };
 
+typedef struct BranchNode {
+  struct TreeNode* left_child;
+  struct TreeNode* right_child;
+  float4 point;
+} BranchNode;
+
+typedef struct LeafNode {
+  float4* head_addr;
+  int count;
+} LeafNode;
+
+typedef enum { BRANCH, LEAF } NodeType;
+
 typedef enum { LEFT = 0, RIGHT = 1 } Direction;
 
-typedef struct Node {
-  int left;
-  int right;
-  float4 point;
-  // int axis;  // maybe can be optimized away
-} Node;
+typedef struct TreeNode {
+  NodeType type;
+  int uid;
 
-typedef struct Range {
-  int low;
-  int high;
-} Range;
-
-float4 in_data[N];
-Node nodes[MAX_NODES];
-Range ranges[MAX_NODES];
-
-int next_node = 0;
-
-int new_node() {
-  int cur = next_node;
-  nodes[cur].left = -1;
-  nodes[cur].right = -1;
-  // nodes[cur].axis = -1;
-  ranges[cur].low = -1;
-  ranges[cur].high = -1;
-  ++next_node;
-  return cur;
-}
-
-bool is_leaf(const int idx) {
-  return nodes[idx].left == -1 && nodes[idx].left == -1;
-}
+  union {
+    BranchNode branch;
+    LeafNode leaf;
+  };
+} TreeNode;
 
 int compare_dim(const float4 p1, const float4 p2, const int dim) {
   // Should be optimized away, double check
@@ -313,72 +302,65 @@ void nth_element(const RanIt first, const RanIt nth, const RanIt last,
 //  Tree data structure
 // ---------------------------------------------------------------------------
 
-int BuildTree(float4* data, const int low, const int high, const int leaf_size,
-              const int depth) {
-  int cur = new_node();
+int next_node = 0;
+
+TreeNode* BuildTree(float4* data, const int low, const int high,
+                    const int leaf_size, const int depth) {
+  TreeNode* node = malloc(sizeof(TreeNode));
+  node->uid = next_node++;
 
   const int n = high - low;
   if (n <= leaf_size) {
-    ranges[cur].low = low;
-    ranges[cur].high = high;
+    node->type = LEAF;
 
+    node->leaf.head_addr = (float4*)malloc(sizeof(float4) * leaf_size);
+    node->leaf.count = n;
+
+    for (int i = 0; i < n; ++i) {
+      node->leaf.head_addr[i] = data[low + i];
+    }
   } else {
     const int mid = (low + high) / 2;
     const int axis = depth % 4;
 
     nth_element(data + low, data + mid, data + high, axis);
 
-    // nodes[cur].axis = axis;
-    nodes[cur].point = data[mid];
-    nodes[cur].left = BuildTree(data, low, mid, leaf_size, depth + 1);
-    nodes[cur].right = BuildTree(data, mid + 1, high, leaf_size, depth + 1);
-
-    ranges[cur].low = ranges[nodes[cur].left].low;
-    ranges[cur].high = ranges[nodes[cur].right].high;
+    node->type = BRANCH;
+    node->branch.point = data[mid];
+    node->branch.left_child = BuildTree(data, low, mid, leaf_size, depth + 1);
+    node->branch.right_child =
+        BuildTree(data, mid + 1, high, leaf_size, depth + 1);
   }
 
-  return cur;
+  return node;
 }
 
-Direction flip_dir(const Direction dir) { return 1 - dir; }
+inline Direction flip_dir(const Direction dir) { return 1 - dir; }
 
-int get_child(const int cur, const Direction dir) {
-  return dir == LEFT ? nodes[cur].left : nodes[cur].right;
+inline TreeNode* get_child(const TreeNode* cur, const Direction dir) {
+  return dir == LEFT ? cur->branch.left_child : cur->branch.right_child;
 }
 
-void dfs(const int cur, const int depth) {
-  if (is_leaf(cur)) {
-    for (int i = 0; i < depth; ++i) putchar('-');
-    printf("[%d]\t[%d, %d)\n", cur, ranges[cur].low, ranges[cur].high);
-  } else {
-    for (int i = 0; i < depth; ++i) putchar('-');
-    printf("[%d]\tleft: %d\tright: %d\t[%d, %d)\n", cur, nodes[cur].left,
-           nodes[cur].right, ranges[cur].low, ranges[cur].high);
-
-    dfs(get_child(cur, LEFT), depth + 1);
-    dfs(get_child(cur, RIGHT), depth + 1);
-  }
-}
-
-void traverse_recursive(const int cur, const float4 q, float* my_min,
+void traverse_recursive(const TreeNode* cur, const float4 q, float* my_min,
                         const int depth) {
-  if (is_leaf(cur)) {
+  if (cur->type == LEAF) {
     for (int i = 0; i < depth; ++i) putchar('-');
-    printf("[%d]\t[%d, %d)\n", cur, ranges[cur].low, ranges[cur].high);
+    printf("%d:%d\n", cur->uid, cur->leaf.count);
 
-    for (int i = ranges[cur].low; i < ranges[cur].high; ++i) {
-      reduce_element(in_data[i], q, my_min);
+    for (int i = 0; i < cur->leaf.count; ++i) {
+      const float4 p = cur->leaf.head_addr[i];
+
+      const float dist = kernel_func_4f(p, q);
+      *my_min = fminf(*my_min, dist);
     }
-
   } else {
     for (int i = 0; i < depth; ++i) putchar('-');
-    printf("[%d]\tleft: %d\tright: %d\t[%d, %d)\n", cur, nodes[cur].left,
-           nodes[cur].right, ranges[cur].low, ranges[cur].high);
+    printf("%d\n", cur->uid);
 
-    reduce_element(nodes[cur].point, q, my_min);
+    reduce_element(cur->branch.point, q, my_min);
 
     const int axis = depth % 4;
-    const float train = get_dim(axis, nodes[cur].point);
+    const float train = get_dim(axis, cur->branch.point);
     const float q_value = get_dim(axis, q);
     const Direction dir = q_value < train ? LEFT : RIGHT;
 
@@ -391,105 +373,13 @@ void traverse_recursive(const int cur, const float4 q, float* my_min,
   }
 }
 
-// ---------------------------------------------------------------------------
-//  Redwood Traverser
-// ---------------------------------------------------------------------------
-
-typedef struct StackField {
-  int cur;
-  Direction dir;
-  float train;
-  float q_value;
-} StackField;
-
-int cur_stack = 0;
-StackField stack[MAX_STACK_SIZE];
-
-int cur_depth_stack = 0;
-int depth_stack[MAX_STACK_SIZE];
-
-int push_stack(const int cur, const Direction dir, const float train,
-               const float q_value) {
-  ++cur_stack;
-  if (cur_stack < MAX_STACK_SIZE) {
-    stack[cur_stack].cur = cur;
-    stack[cur_stack].dir = dir;
-    stack[cur_stack].train = train;
-    stack[cur_stack].q_value = q_value;
-    return 0;
-  } else {
-    printf("executor stack overflow!!\n");
-    exit(1);
-  }
-}
-
-StackField pop_stack(void) { return stack[cur_stack--]; }
-
-bool stack_empty(void) { return cur_stack == 0; }
-
-void traverse_iterative(const int start_node, const float4 q, float* my_min) {
-  int cur = start_node;
-  cur_stack = 0;
-
-  // depth_stack push '0' (initialized depth)
-  cur_depth_stack = 1;
-  depth_stack[cur_depth_stack] = 0;
-
-  while (cur != -1 || !stack_empty()) {
-    while (cur != -1) {
-      int depth = depth_stack[cur_depth_stack--];
-      if (is_leaf(cur)) {
-        for (int i = 0; i < depth; ++i) putchar('-');
-        printf("[%d]\t[%d, %d)\n", cur, ranges[cur].low, ranges[cur].high);
-
-        for (int i = ranges[cur].low; i < ranges[cur].high; ++i) {
-          reduce_element(in_data[i], q, my_min);
-        }
-
-        cur = -1;
-        continue;
-      }
-
-      for (int i = 0; i < depth; ++i) putchar('-');
-      printf("[%d]\tleft: %d\tright: %d\t[%d, %d)\n", cur, nodes[cur].left,
-             nodes[cur].right, ranges[cur].low, ranges[cur].high);
-
-      reduce_element(nodes[cur].point, q, my_min);
-
-      const int axis = depth % 4;
-      // const int axis = nodes[cur].axis;
-      const float train = get_dim(axis, nodes[cur].point);
-      const float q_value = get_dim(axis, q);
-      const Direction dir = q_value < train ? LEFT : RIGHT;
-
-      // Recursion 1
-      push_stack(cur, dir, train, q_value);
-      depth_stack[++cur_depth_stack] = depth + 1;
-      cur = get_child(cur, dir);
-    }
-
-    if (!stack_empty()) {
-      // pop
-      const StackField last = pop_stack();
-      int last_depth = depth_stack[cur_depth_stack--];
-
-      const float diff = kernel_func_1f(last.q_value, last.train);
-      if (diff < *my_min) {
-        // Recursion 2
-        depth_stack[++cur_depth_stack] = last_depth + 1;
-        cur = get_child(last.cur, flip_dir(last.dir));
-      }
-    }
-  }
-  // Done traversals
-}
-
 int main(void) {
   const int leaf_size = 32;
 
+  float4 in_data[N];
   for (int i = 0; i < N; ++i) in_data[i] = generate_random_float4();
 
-  const int root = BuildTree(in_data, 0, N, leaf_size, 0);
+  const TreeNode* root = BuildTree(in_data, 0, N, leaf_size, 0);
   printf("num_node_used: %d\n", next_node);
 
   const float4 q = generate_random_float4();
@@ -499,12 +389,6 @@ int main(void) {
   float my_min = FLT_MAX;
   traverse_recursive(root, q, &my_min, 0);
   printf("my_min: %f\n", my_min);
-
-  printf("\n");
-
-  float my_min_2 = FLT_MAX;
-  traverse_iterative(root, q, &my_min_2);
-  printf("my_min2: %f\n", my_min_2);
 
   return 0;
 }
