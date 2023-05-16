@@ -282,8 +282,7 @@ void nth_element(const RanIt first, const RanIt nth, const RanIt last,
 
   // ISORT_MAX = 32
   while (32 < u_last - u_first) {
-    // divide and conquer, ordering
-    // partition containing Nth
+    // divide and conquer, ordering partition containing Nth
     const Pair u_mid =
         partition_by_median_guess_unchecked(u_first, u_last, axis);
 
