@@ -1,4 +1,3 @@
-#include <assert.h>
 #include <float.h>
 #include <math.h>
 #include <stdbool.h>
@@ -15,9 +14,6 @@ enum {
   M = 8,
   MAX_NODES = 2048,
   MAX_STACK_SIZE = 128,
-
-  // how many elements can be processed by the FPGA
-  DUET_LEAF_SIZE = 32,
 };
 
 // ---------------------------------------------------------------------------
@@ -40,7 +36,6 @@ float4 generate_random_float4(void) {
 typedef enum { LEFT = 0, RIGHT = 1 } Direction;
 
 typedef struct Node {
-  int axis;
   int left;
   int right;
   float4 point;
@@ -61,6 +56,7 @@ int new_node() {
   int cur = next_node;
   nodes[cur].left = -1;
   nodes[cur].right = -1;
+  // nodes[cur].axis = -1;
   ranges[cur].low = -1;
   ranges[cur].high = -1;
   ++next_node;
@@ -91,7 +87,7 @@ float get_dim(const int dim, const float4 p) {
 //  Kernel Functions
 // ---------------------------------------------------------------------------
 
-float kernel_func_4f(const float4 p, const float4 q) {
+inline float kernel_func_4f(const float4 p, const float4 q) {
   const float dx = p.x - q.x;
   const float dy = p.y - q.y;
   const float dz = p.z - q.z;
@@ -99,9 +95,14 @@ float kernel_func_4f(const float4 p, const float4 q) {
   return sqrtf(dx * dx + dy * dy + dz * dz + dw * dw);
 }
 
-float kernel_func_1f(const float p, const float q) {
+inline float kernel_func_1f(const float p, const float q) {
   const float dx = p - q;
   return sqrtf(dx * dx);
+}
+
+inline void reduce_element(const float4 p, const float4 q, float* my_min) {
+  const float dist = kernel_func_4f(p, q);
+  *my_min = fminf(*my_min, dist);
 }
 
 float ground_truth(const float4* data, const float4 q) {
@@ -111,33 +112,6 @@ float ground_truth(const float4* data, const float4 q) {
     gt = fminf(gt, dist);
   }
   return gt;
-}
-
-void cpu_emulated_reduce_32(const float4* in_addr, float* out_addr,
-                            const float4 q, const int active) {
-  float my_min = FLT_MAX;
-  for (int i = 0; i < active; ++i) {
-    float dist = kernel_func_4f(in_addr[i], q);
-    my_min = fminf(my_min, dist);
-  }
-  *out_addr = fminf(*out_addr, my_min);
-}
-
-// Reduce all values between range
-void fpga_kernel(const int low, const int high, float* out_addr,
-                 const float4 q) {
-  const int n = high - low;
-  float4* addr = &in_data[low];
-  int remainder = n % DUET_LEAF_SIZE;
-
-  int i = 0;
-  for (; i < n; i += DUET_LEAF_SIZE) {
-    cpu_emulated_reduce_32(addr + i, out_addr, q, DUET_LEAF_SIZE);
-  }
-
-  if (remainder > 0) {
-    cpu_emulated_reduce_32(addr + i, out_addr, q, remainder);
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -359,7 +333,7 @@ int BuildTree(float4* data, const int low, const int high, const int leaf_size,
 
     nth_element(data + low, data + mid, data + high, axis);
 
-    nodes[cur].axis = axis;
+    // nodes[cur].axis = axis;
     nodes[cur].point = data[mid];
     nodes[cur].left = BuildTree(data, low, mid, leaf_size, depth + 1);
     nodes[cur].right = BuildTree(data, mid + 1, high, leaf_size, depth + 1);
@@ -397,17 +371,16 @@ void traverse_recursive(const int cur, const float4 q, float* my_min,
     for (int i = 0; i < depth; ++i) putchar('-');
     printf("[%d]\t[%d, %d)\n", cur, ranges[cur].low, ranges[cur].high);
 
-    // Reduce at leaf node, accelerated by FPGA
-    fpga_kernel(ranges[cur].low, ranges[cur].high, my_min, q);
+    for (int i = ranges[cur].low; i < ranges[cur].high; ++i) {
+      reduce_element(in_data[i], q, my_min);
+    }
 
   } else {
     for (int i = 0; i < depth; ++i) putchar('-');
     printf("[%d]\tleft: %d\tright: %d\t[%d, %d)\n", cur, nodes[cur].left,
            nodes[cur].right, ranges[cur].low, ranges[cur].high);
 
-    // Reduce at branch node
-    const float dist = kernel_func_4f(nodes[cur].point, q);
-    *my_min = fminf(*my_min, dist);
+    reduce_element(nodes[cur].point, q, my_min);
 
     const int axis = depth % 4;
     const float train = get_dim(axis, nodes[cur].point);
@@ -457,67 +430,76 @@ Fields pop_node_stack(void) { return stack[cur_node_stack--]; }
 
 bool node_stack_empty(void) { return cur_node_stack == 0; }
 
-// // Argument stack
-// typedef struct Args {
-//   int depth;
-// } Args;
+// Argument stack
+typedef struct Args {
+  int depth;
+} Args;
 
-// int cur_arg_stack = 0;
-// Args arg_stack[MAX_STACK_SIZE];
+int cur_arg_stack = 0;
+Args arg_stack[MAX_STACK_SIZE];
 
-// int push_arg_stack(const int depth) {
-//   ++cur_arg_stack;
-//   if (cur_arg_stack < MAX_STACK_SIZE) {
-//     arg_stack[cur_arg_stack].depth = depth;
-//     return 0;
-//   } else {
-//     printf("executor stack overflow!!\n");
-//     exit(1);
-//   }
-// }
+int push_arg_stack(const int depth) {
+  ++cur_arg_stack;
+  if (cur_arg_stack < MAX_STACK_SIZE) {
+    arg_stack[cur_arg_stack].depth = depth;
+    return 0;
+  } else {
+    printf("executor stack overflow!!\n");
+    exit(1);
+  }
+}
 
-// Args pop_arg_stack(void) { return arg_stack[cur_arg_stack--]; }
+Args pop_arg_stack(void) { return arg_stack[cur_arg_stack--]; }
 
 void traverse_iterative(const int start_node, const float4 q, float* my_min) {
   cur_node_stack = 0;
+  cur_arg_stack = 0;
 
   int cur = start_node;
+  push_arg_stack(0);
 
   while (cur != -1 || !node_stack_empty()) {
     while (cur != -1) {
+      const Args args = pop_arg_stack();
+
       if (is_leaf(cur)) {
+        for (int i = 0; i < args.depth; ++i) putchar('-');
         printf("[%d]\t[%d, %d)\n", cur, ranges[cur].low, ranges[cur].high);
 
-        fpga_kernel(ranges[cur].low, ranges[cur].high, my_min, q);
+        for (int i = ranges[cur].low; i < ranges[cur].high; ++i) {
+          reduce_element(in_data[i], q, my_min);
+        }
 
         cur = -1;
         continue;
       }
 
+      for (int i = 0; i < args.depth; ++i) putchar('-');
       printf("[%d]\tleft: %d\tright: %d\t[%d, %d)\n", cur, nodes[cur].left,
              nodes[cur].right, ranges[cur].low, ranges[cur].high);
 
-      // Reduce at branch node
-      const float dist = kernel_func_4f(nodes[cur].point, q);
-      *my_min = fminf(*my_min, dist);
+      reduce_element(nodes[cur].point, q, my_min);
 
-      const int axis = nodes[cur].axis;
+      const int axis = args.depth % 4;
       const float train = get_dim(axis, nodes[cur].point);
       const float q_value = get_dim(axis, q);
       const Direction dir = q_value < train ? LEFT : RIGHT;
 
       // Recursion 1
       push_node_stack(cur, dir, train, q_value);
+      push_arg_stack(args.depth + 1);
       cur = get_child(cur, dir);
     }
 
     if (!node_stack_empty()) {
       // pop
       const Fields last = pop_node_stack();
+      const Args last_args = pop_arg_stack();
 
       const float diff = kernel_func_1f(last.q_value, last.train);
       if (diff < *my_min) {
         // Recursion 2
+        push_arg_stack(last_args.depth + 1);
         cur = get_child(last.cur, flip_dir(last.dir));
       }
     }
@@ -526,8 +508,7 @@ void traverse_iterative(const int start_node, const float4 q, float* my_min) {
 }
 
 int main(void) {
-  const int leaf_size = 1024;
-  assert(leaf_size >= DUET_LEAF_SIZE);
+  const int leaf_size = 32;
 
   for (int i = 0; i < N; ++i) in_data[i] = generate_random_float4();
 
