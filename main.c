@@ -395,27 +395,25 @@ void traverse_recursive(const int cur, const float4 q, float* my_min,
 //  Redwood Traverser
 // ---------------------------------------------------------------------------
 
-typedef struct StackField {
+// Node traversal stack
+typedef struct Fields {
   int cur;
   Direction dir;
   float train;
   float q_value;
-} StackField;
+} Fields;
 
-int cur_stack = 0;
-StackField stack[MAX_STACK_SIZE];
+int cur_node_stack = 0;
+Fields stack[MAX_STACK_SIZE];
 
-int cur_depth_stack = 0;
-int depth_stack[MAX_STACK_SIZE];
-
-int push_stack(const int cur, const Direction dir, const float train,
-               const float q_value) {
-  ++cur_stack;
-  if (cur_stack < MAX_STACK_SIZE) {
-    stack[cur_stack].cur = cur;
-    stack[cur_stack].dir = dir;
-    stack[cur_stack].train = train;
-    stack[cur_stack].q_value = q_value;
+int push_node_stack(const int cur, const Direction dir, const float train,
+                    const float q_value) {
+  ++cur_node_stack;
+  if (cur_node_stack < MAX_STACK_SIZE) {
+    stack[cur_node_stack].cur = cur;
+    stack[cur_node_stack].dir = dir;
+    stack[cur_node_stack].train = train;
+    stack[cur_node_stack].q_value = q_value;
     return 0;
   } else {
     printf("executor stack overflow!!\n");
@@ -423,23 +421,44 @@ int push_stack(const int cur, const Direction dir, const float train,
   }
 }
 
-StackField pop_stack(void) { return stack[cur_stack--]; }
+Fields pop_node_stack(void) { return stack[cur_node_stack--]; }
 
-bool stack_empty(void) { return cur_stack == 0; }
+bool node_stack_empty(void) { return cur_node_stack == 0; }
+
+// Argument stack
+typedef struct Args {
+  int depth;
+} Args;
+
+int cur_arg_stack = 0;
+Args arg_stack[MAX_STACK_SIZE];
+
+int push_arg_stack(const int depth) {
+  ++cur_arg_stack;
+  if (cur_arg_stack < MAX_STACK_SIZE) {
+    arg_stack[cur_arg_stack].depth = depth;
+    return 0;
+  } else {
+    printf("executor stack overflow!!\n");
+    exit(1);
+  }
+}
+
+Args pop_arg_stack(void) { return arg_stack[cur_arg_stack--]; }
 
 void traverse_iterative(const int start_node, const float4 q, float* my_min) {
+  cur_node_stack = 0;
+  cur_arg_stack = 0;
+
   int cur = start_node;
-  cur_stack = 0;
+  push_arg_stack(0);
 
-  // depth_stack push '0' (initialized depth)
-  cur_depth_stack = 1;
-  depth_stack[cur_depth_stack] = 0;
-
-  while (cur != -1 || !stack_empty()) {
+  while (cur != -1 || !node_stack_empty()) {
     while (cur != -1) {
-      int depth = depth_stack[cur_depth_stack--];
+      const Args args = pop_arg_stack();
+
       if (is_leaf(cur)) {
-        for (int i = 0; i < depth; ++i) putchar('-');
+        for (int i = 0; i < args.depth; ++i) putchar('-');
         printf("[%d]\t[%d, %d)\n", cur, ranges[cur].low, ranges[cur].high);
 
         for (int i = ranges[cur].low; i < ranges[cur].high; ++i) {
@@ -450,33 +469,32 @@ void traverse_iterative(const int start_node, const float4 q, float* my_min) {
         continue;
       }
 
-      for (int i = 0; i < depth; ++i) putchar('-');
+      for (int i = 0; i < args.depth; ++i) putchar('-');
       printf("[%d]\tleft: %d\tright: %d\t[%d, %d)\n", cur, nodes[cur].left,
              nodes[cur].right, ranges[cur].low, ranges[cur].high);
 
       reduce_element(nodes[cur].point, q, my_min);
 
-      const int axis = depth % 4;
-      // const int axis = nodes[cur].axis;
+      const int axis = args.depth % 4;
       const float train = get_dim(axis, nodes[cur].point);
       const float q_value = get_dim(axis, q);
       const Direction dir = q_value < train ? LEFT : RIGHT;
 
       // Recursion 1
-      push_stack(cur, dir, train, q_value);
-      depth_stack[++cur_depth_stack] = depth + 1;
+      push_node_stack(cur, dir, train, q_value);
+      push_arg_stack(args.depth + 1);
       cur = get_child(cur, dir);
     }
 
-    if (!stack_empty()) {
+    if (!node_stack_empty()) {
       // pop
-      const StackField last = pop_stack();
-      int last_depth = depth_stack[cur_depth_stack--];
+      const Fields last = pop_node_stack();
+      const Args last_args = pop_arg_stack();
 
       const float diff = kernel_func_1f(last.q_value, last.train);
       if (diff < *my_min) {
         // Recursion 2
-        depth_stack[++cur_depth_stack] = last_depth + 1;
+        push_arg_stack(last_args.depth + 1);
         cur = get_child(last.cur, flip_dir(last.dir));
       }
     }
