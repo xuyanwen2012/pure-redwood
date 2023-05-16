@@ -14,10 +14,11 @@ enum {
   N = 10240,
   M = 8,
   MAX_NODES = 2048,
-  MAX_STACK_SIZE = 128,
+  MAX_STACK_SIZE = 32,
 
   // how many elements can be processed by the FPGA
   DUET_LEAF_SIZE = 32,
+  NUM_EXECUTORS = 2,
 };
 
 // ---------------------------------------------------------------------------
@@ -435,17 +436,30 @@ typedef struct Fields {
   float q_value;
 } Fields;
 
-int cur_node_stack = 0;
-Fields stack[MAX_STACK_SIZE];
+// Each exector should get its own stack.
+int cur_node_stack[NUM_EXECUTORS];
+Fields stack[NUM_EXECUTORS][MAX_STACK_SIZE];
 
-int push_node_stack(const int cur, const Direction dir, const float train,
-                    const float q_value) {
-  ++cur_node_stack;
-  if (cur_node_stack < MAX_STACK_SIZE) {
-    stack[cur_node_stack].cur = cur;
-    stack[cur_node_stack].dir = dir;
-    stack[cur_node_stack].train = train;
-    stack[cur_node_stack].q_value = q_value;
+void init_stacks(void) {
+  for (int i = 0; i < NUM_EXECUTORS; ++i) {
+    cur_node_stack[i] = 0;
+    for (int j = 0; j < MAX_STACK_SIZE; ++j) {
+      stack[i][j].cur = -1;
+      stack[i][j].dir = LEFT;
+      stack[i][j].train = 0.0f;
+      stack[i][j].q_value = 0.0f;
+    }
+  }
+}
+
+int push_node_stack(const int exe_id, const int cur, const Direction dir,
+                    const float train, const float q_value) {
+  ++cur_node_stack[exe_id];
+  if (cur_node_stack[exe_id] < MAX_STACK_SIZE) {
+    stack[exe_id][cur_node_stack[exe_id]].cur = cur;
+    stack[exe_id][cur_node_stack[exe_id]].dir = dir;
+    stack[exe_id][cur_node_stack[exe_id]].train = train;
+    stack[exe_id][cur_node_stack[exe_id]].q_value = q_value;
     return 0;
   } else {
     printf("executor stack overflow!!\n");
@@ -453,16 +467,19 @@ int push_node_stack(const int cur, const Direction dir, const float train,
   }
 }
 
-Fields pop_node_stack(void) { return stack[cur_node_stack--]; }
+Fields pop_node_stack(const int exe_id) {
+  return stack[exe_id][cur_node_stack[exe_id]--];
+}
 
-bool node_stack_empty(void) { return cur_node_stack == 0; }
+bool node_stack_empty(const int exe_id) { return cur_node_stack[exe_id] == 0; }
 
-void traverse_iterative(const int start_node, const float4 q, float* my_min) {
-  cur_node_stack = 0;
+void traverse_iterative(const int exe_id, const int start_node, const float4 q,
+                        float* my_min) {
+  cur_node_stack[exe_id] = 0;
 
   int cur = start_node;
 
-  while (cur != -1 || !node_stack_empty()) {
+  while (cur != -1 || !node_stack_empty(exe_id)) {
     while (cur != -1) {
       if (is_leaf(cur)) {
         printf("[%d]\t[%d, %d)\n", cur, ranges[cur].low, ranges[cur].high);
@@ -486,13 +503,13 @@ void traverse_iterative(const int start_node, const float4 q, float* my_min) {
       const Direction dir = q_value < train ? LEFT : RIGHT;
 
       // Recursion 1
-      push_node_stack(cur, dir, train, q_value);
+      push_node_stack(exe_id, cur, dir, train, q_value);
       cur = get_child(cur, dir);
     }
 
-    if (!node_stack_empty()) {
+    if (!node_stack_empty(exe_id)) {
       // pop
-      const Fields last = pop_node_stack();
+      const Fields last = pop_node_stack(exe_id);
 
       const float diff = kernel_func_1f(last.q_value, last.train);
       if (diff < *my_min) {
@@ -505,7 +522,7 @@ void traverse_iterative(const int start_node, const float4 q, float* my_min) {
 }
 
 int main(void) {
-  const int leaf_size = 1024;
+  const int leaf_size = 128;
   assert(leaf_size >= DUET_LEAF_SIZE);
 
   for (int i = 0; i < N; ++i) in_data[i] = generate_random_float4();
@@ -514,8 +531,8 @@ int main(void) {
   printf("num_node_used: %d\n", next_node);
 
   const float4 q = generate_random_float4();
-  const float gt = ground_truth(in_data, q);
-  printf("gt: %f\n", gt);
+
+  printf("gt: %f\n", ground_truth(in_data, q));
 
   float my_min = FLT_MAX;
   traverse_recursive(root, q, &my_min, 0);
@@ -523,9 +540,17 @@ int main(void) {
 
   printf("\n");
 
+  init_stacks();
+
   float my_min_2 = FLT_MAX;
-  traverse_iterative(root, q, &my_min_2);
+  traverse_iterative(0, root, q, &my_min_2);
   printf("my_min2: %f\n", my_min_2);
+
+  const float4 q2 = generate_random_float4();
+
+  float my_min_3 = FLT_MAX;
+  traverse_iterative(0, root, q2, &my_min_3);
+  printf("my_min3: %f\n", my_min_3);
 
   return 0;
 }
