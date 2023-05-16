@@ -5,11 +5,24 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "float4.h"
+// ---------------------------------------------------------------------------
+//  App Constants
+// ---------------------------------------------------------------------------
+
+enum {
+  N = 10240,
+  M = 8,
+  MAX_NODES = 2048,
+  MAX_STACK_SIZE = 128,
+};
 
 // ---------------------------------------------------------------------------
 //  Utils
 // ---------------------------------------------------------------------------
+
+typedef struct float4 {
+  float x, y, z, w;
+} float4;
 
 float4 generate_random_float4(void) {
   float4 random_float4;
@@ -20,20 +33,12 @@ float4 generate_random_float4(void) {
   return random_float4;
 }
 
-enum {
-  N = 10240,
-  M = 8,
-  MAX_NODES = 2048,
-  MAX_STACK_SIZE = 128,
-};
-
 typedef enum { LEFT = 0, RIGHT = 1 } Direction;
 
 typedef struct Node {
   int left;
   int right;
   float4 point;
-  // int axis;  // maybe can be optimized away
 } Node;
 
 typedef struct Range {
