@@ -457,27 +457,6 @@ Fields pop_node_stack(void) { return stack[cur_node_stack--]; }
 
 bool node_stack_empty(void) { return cur_node_stack == 0; }
 
-// // Argument stack
-// typedef struct Args {
-//   int depth;
-// } Args;
-
-// int cur_arg_stack = 0;
-// Args arg_stack[MAX_STACK_SIZE];
-
-// int push_arg_stack(const int depth) {
-//   ++cur_arg_stack;
-//   if (cur_arg_stack < MAX_STACK_SIZE) {
-//     arg_stack[cur_arg_stack].depth = depth;
-//     return 0;
-//   } else {
-//     printf("executor stack overflow!!\n");
-//     exit(1);
-//   }
-// }
-
-// Args pop_arg_stack(void) { return arg_stack[cur_arg_stack--]; }
-
 void traverse_iterative(const int start_node, const float4 q, float* my_min) {
   cur_node_stack = 0;
 
