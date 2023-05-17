@@ -1,5 +1,4 @@
 #include <assert.h>
-#include <fcntl.h>
 #include <float.h>
 #include <math.h>
 #include <stdbool.h>
@@ -7,7 +6,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <sys/mman.h>
 
 // ---------------------------------------------------------------------------
 //  App Constants
