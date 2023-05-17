@@ -436,30 +436,40 @@ typedef struct Fields {
   float q_value;
 } Fields;
 
-// Each exector should get its own stack.
-int cur_node_stack[NUM_EXECUTORS];
-Fields stack[NUM_EXECUTORS][MAX_STACK_SIZE];
+typedef enum { Finished, Working } ExecuteStatus;
 
-void init_stacks(void) {
-  for (int i = 0; i < NUM_EXECUTORS; ++i) {
-    cur_node_stack[i] = 0;
-    for (int j = 0; j < MAX_STACK_SIZE; ++j) {
-      stack[i][j].cur = -1;
-      stack[i][j].dir = LEFT;
-      stack[i][j].train = 0.0f;
-      stack[i][j].q_value = 0.0f;
-    }
+typedef struct Executor {
+  ExecuteStatus state;
+  float4 q;
+  float my_min;
+  int cur_node_stack;
+  Fields stack[MAX_STACK_SIZE];
+} Executor;
+
+void reset_exe(Executor* exe, const float4 q) {
+  exe->state = Finished;
+  exe->q = q;
+  exe->my_min = FLT_MAX;
+  exe->cur_node_stack = 0;
+}
+
+void init_exe(Executor* exe) {
+  for (int j = 0; j < MAX_STACK_SIZE; ++j) {
+    exe->stack[j].cur = -1;
+    exe->stack[j].dir = LEFT;
+    exe->stack[j].train = 0.0f;
+    exe->stack[j].q_value = 0.0f;
   }
 }
 
-int push_node_stack(const int exe_id, const int cur, const Direction dir,
+int push_node_stack(Executor* exe, const int cur, const Direction dir,
                     const float train, const float q_value) {
-  ++cur_node_stack[exe_id];
-  if (cur_node_stack[exe_id] < MAX_STACK_SIZE) {
-    stack[exe_id][cur_node_stack[exe_id]].cur = cur;
-    stack[exe_id][cur_node_stack[exe_id]].dir = dir;
-    stack[exe_id][cur_node_stack[exe_id]].train = train;
-    stack[exe_id][cur_node_stack[exe_id]].q_value = q_value;
+  ++exe->cur_node_stack;
+  if (exe->cur_node_stack < MAX_STACK_SIZE) {
+    exe->stack[exe->cur_node_stack].cur = cur;
+    exe->stack[exe->cur_node_stack].dir = dir;
+    exe->stack[exe->cur_node_stack].train = train;
+    exe->stack[exe->cur_node_stack].q_value = q_value;
     return 0;
   } else {
     printf("executor stack overflow!!\n");
@@ -467,24 +477,35 @@ int push_node_stack(const int exe_id, const int cur, const Direction dir,
   }
 }
 
-Fields pop_node_stack(const int exe_id) {
-  return stack[exe_id][cur_node_stack[exe_id]--];
+Fields pop_node_stack(Executor* exe) {
+  return exe->stack[exe->cur_node_stack--];
 }
 
-bool node_stack_empty(const int exe_id) { return cur_node_stack[exe_id] == 0; }
+bool node_stack_empty(Executor* exe) { return exe->cur_node_stack == 0; }
 
-void traverse_iterative(const int exe_id, const int start_node, const float4 q,
+void traverse_iterative(Executor* exe, const int start_node, const float4 q,
                         float* my_min) {
-  cur_node_stack[exe_id] = 0;
+  if (exe->state == Working) {
+    goto my_resume_point;
+  }
+
+  // cur_node_stack[exe_id] = 0;
+  exe->state = Working;
+  exe->cur_node_stack = 0;
 
   int cur = start_node;
 
-  while (cur != -1 || !node_stack_empty(exe_id)) {
+  while (cur != -1 || !node_stack_empty(exe)) {
     while (cur != -1) {
       if (is_leaf(cur)) {
         printf("[%d]\t[%d, %d)\n", cur, ranges[cur].low, ranges[cur].high);
 
         fpga_kernel(ranges[cur].low, ranges[cur].high, my_min, q);
+
+        // **** Coroutine Reuturn (API) ****
+        return;
+      my_resume_point:
+        // ****************************
 
         cur = -1;
         continue;
@@ -503,13 +524,13 @@ void traverse_iterative(const int exe_id, const int start_node, const float4 q,
       const Direction dir = q_value < train ? LEFT : RIGHT;
 
       // Recursion 1
-      push_node_stack(exe_id, cur, dir, train, q_value);
+      push_node_stack(exe, cur, dir, train, q_value);
       cur = get_child(cur, dir);
     }
 
-    if (!node_stack_empty(exe_id)) {
+    if (!node_stack_empty(exe)) {
       // pop
-      const Fields last = pop_node_stack(exe_id);
+      const Fields last = pop_node_stack(exe);
 
       const float diff = kernel_func_1f(last.q_value, last.train);
       if (diff < *my_min) {
@@ -519,6 +540,7 @@ void traverse_iterative(const int exe_id, const int start_node, const float4 q,
     }
   }
   // Done traversals
+  exe->state = Finished;
 }
 
 int main(void) {
@@ -530,27 +552,32 @@ int main(void) {
   const int root = BuildTree(in_data, 0, N, leaf_size, 0);
   printf("num_node_used: %d\n", next_node);
 
-  const float4 q = generate_random_float4();
-
-  printf("gt: %f\n", ground_truth(in_data, q));
-
-  float my_min = FLT_MAX;
-  traverse_recursive(root, q, &my_min, 0);
-  printf("my_min: %f\n", my_min);
-
   printf("\n");
 
-  init_stacks();
+  // init_stacks();
+  Executor exes[NUM_EXECUTORS];
+  for (int i = 0; i < NUM_EXECUTORS; ++i) {
+    init_exe(&exes[i]);
+  }
 
-  float my_min_2 = FLT_MAX;
-  traverse_iterative(0, root, q, &my_min_2);
-  printf("my_min2: %f\n", my_min_2);
+  float my_min;
 
-  const float4 q2 = generate_random_float4();
+  // Generate and Traverse
+  // for (int i = 0; i < 1; ++i) {
 
-  float my_min_3 = FLT_MAX;
-  traverse_iterative(0, root, q2, &my_min_3);
-  printf("my_min3: %f\n", my_min_3);
+  // }
+
+  const float4 q = generate_random_float4();
+
+  Executor* cur_exe = &exes[0];
+
+  reset_exe(cur_exe, q);
+  my_min = FLT_MAX;
+  do {
+    traverse_iterative(cur_exe, root, q, &my_min);
+  } while (cur_exe->state == Working);
+
+  printf("my_min: %f\n", my_min);
 
   return 0;
 }
