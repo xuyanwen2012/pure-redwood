@@ -505,7 +505,9 @@ void execute(Executor* exe) {
         DEBUG_PRINT("(%p) [%d]\t[%d, %d)\n", (void*)exe, cur, ranges[cur].low,
                     ranges[cur].high);
 
+        // **** Accelerated ****
         fpga_kernel(ranges[cur].low, ranges[cur].high, &exe->my_min, exe->q);
+        // ****************************
 
         // **** Coroutine Reuturn (API) ****
         return;
