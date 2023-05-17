@@ -1,10 +1,13 @@
 #include <assert.h>
+#include <fcntl.h>
 #include <float.h>
 #include <math.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/mman.h>
 
 // ---------------------------------------------------------------------------
 //  App Constants
@@ -22,7 +25,7 @@ enum {
   N = 10240,
   M = 8,
   MAX_NODES = 2048,
-  MAX_STACK_SIZE = 32,
+  MAX_STACK_SIZE = 64,
 
   // how many elements can be processed by the FPGA
   DUET_LEAF_SIZE = 32,
@@ -95,6 +98,33 @@ float get_dim(const int dim, const float4 p) {
   if (dim == 1) return p.y;
   if (dim == 2) return p.z;
   return p.w;
+}
+
+// ---------------------------------------------------------------------------
+//  Duet Related
+// ---------------------------------------------------------------------------
+
+const int kArg = 0;
+const int kPos0X = 1;
+const int kPos0Y = 2;
+const int kPos0Z = 3;
+const int kPos0W = 4;
+const int kFincnt = 5;
+const int kResult = 6;
+const int kNEngine = 1;
+
+// Main entry for Duet
+volatile uint64_t* duet_baseaddr = NULL;
+
+void init_duet() {
+  // No syscalls
+
+  //   // 8k?
+  //   int fd = open("/dev/duet", O_RDWR);
+  //   duet_baseaddr = static_cast<volatile uint64_t*>(mmap(
+  //       nullptr, kNEngine << 13, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd,
+  //       0));
+  // }
 }
 
 // ---------------------------------------------------------------------------
@@ -558,6 +588,7 @@ void start_new_execute(Executor* exe, const float4 q) {
 
 int main(void) {
   const int leaf_size = 32;
+
   assert(leaf_size >= DUET_LEAF_SIZE);
 
   for (int i = 0; i < N; ++i) in_data[i] = generate_random_float4();

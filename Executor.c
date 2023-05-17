@@ -10,18 +10,27 @@
 //  App Constants
 // ---------------------------------------------------------------------------
 
+#ifdef REDWOOD_DEBUG
+#define DEBUG_PRINT(fmt, ...) printf(fmt, ##__VA_ARGS__)
+#else
+#define DEBUG_PRINT(fmt, ...) \
+  do {                        \
+  } while (0)
+#endif
+
 enum {
   N = 10240,
   M = 8,
   MAX_NODES = 2048,
-  MAX_STACK_SIZE = 128,
+  MAX_STACK_SIZE = 32,
 
   // how many elements can be processed by the FPGA
   DUET_LEAF_SIZE = 32,
+  NUM_EXECUTORS = 2,
 };
 
 // ---------------------------------------------------------------------------
-//  Utils
+//  Utils / Tree Node
 // ---------------------------------------------------------------------------
 
 typedef struct float4 {
@@ -51,14 +60,15 @@ typedef struct Range {
   int high;
 } Range;
 
+// The actual data
 float4 in_data[N];
 Node nodes[MAX_NODES];
 Range ranges[MAX_NODES];
 
 int next_node = 0;
 
-int new_node() {
-  int cur = next_node;
+int new_node(void) {
+  const int cur = next_node;
   nodes[cur].left = -1;
   nodes[cur].right = -1;
   ranges[cur].low = -1;
@@ -68,7 +78,7 @@ int new_node() {
 }
 
 bool is_leaf(const int idx) {
-  return nodes[idx].left == -1 && nodes[idx].left == -1;
+  return nodes[idx].left == -1 && nodes[idx].right == -1;
 }
 
 int compare_dim(const float4 p1, const float4 p2, const int dim) {
@@ -117,7 +127,7 @@ void cpu_emulated_reduce_32(const float4* in_addr, float* out_addr,
                             const float4 q, const int active) {
   float my_min = FLT_MAX;
   for (int i = 0; i < active; ++i) {
-    float dist = kernel_func_4f(in_addr[i], q);
+    const float dist = kernel_func_4f(in_addr[i], q);
     my_min = fminf(my_min, dist);
   }
   *out_addr = fminf(*out_addr, my_min);
@@ -127,8 +137,8 @@ void cpu_emulated_reduce_32(const float4* in_addr, float* out_addr,
 void fpga_kernel(const int low, const int high, float* out_addr,
                  const float4 q) {
   const int n = high - low;
-  float4* addr = &in_data[low];
-  int remainder = n % DUET_LEAF_SIZE;
+  const float4* addr = &in_data[low];
+  const int remainder = n % DUET_LEAF_SIZE;
 
   int i = 0;
   for (; i < n; i += DUET_LEAF_SIZE) {
@@ -141,7 +151,7 @@ void fpga_kernel(const int low, const int high, float* out_addr,
 }
 
 // ---------------------------------------------------------------------------
-//  C++ STD Algorithm
+//  C++ STD Algorithm (Modified)
 // ---------------------------------------------------------------------------
 
 typedef float4* RanIt;
@@ -341,18 +351,17 @@ void nth_element(const RanIt first, const RanIt nth, const RanIt last,
 }
 
 // ---------------------------------------------------------------------------
-//  Tree data structure
+//  KDT Tree Data Structure
 // ---------------------------------------------------------------------------
 
 int BuildTree(float4* data, const int low, const int high, const int leaf_size,
               const int depth) {
-  int cur = new_node();
+  const int cur = new_node();
 
   const int n = high - low;
   if (n <= leaf_size) {
     ranges[cur].low = low;
     ranges[cur].high = high;
-
   } else {
     const int mid = (low + high) / 2;
     const int axis = depth % 4;
@@ -380,11 +389,11 @@ int get_child(const int cur, const Direction dir) {
 void dfs(const int cur, const int depth) {
   if (is_leaf(cur)) {
     for (int i = 0; i < depth; ++i) putchar('-');
-    printf("[%d]\t[%d, %d)\n", cur, ranges[cur].low, ranges[cur].high);
+    DEBUG_PRINT("[%d]\t[%d, %d)\n", cur, ranges[cur].low, ranges[cur].high);
   } else {
     for (int i = 0; i < depth; ++i) putchar('-');
-    printf("[%d]\tleft: %d\tright: %d\t[%d, %d)\n", cur, nodes[cur].left,
-           nodes[cur].right, ranges[cur].low, ranges[cur].high);
+    DEBUG_PRINT("[%d]\tleft: %d\tright: %d\t[%d, %d)\n", cur, nodes[cur].left,
+                nodes[cur].right, ranges[cur].low, ranges[cur].high);
 
     dfs(get_child(cur, LEFT), depth + 1);
     dfs(get_child(cur, RIGHT), depth + 1);
@@ -395,15 +404,14 @@ void traverse_recursive(const int cur, const float4 q, float* my_min,
                         const int depth) {
   if (is_leaf(cur)) {
     for (int i = 0; i < depth; ++i) putchar('-');
-    printf("[%d]\t[%d, %d)\n", cur, ranges[cur].low, ranges[cur].high);
+    DEBUG_PRINT("[%d]\t[%d, %d)\n", cur, ranges[cur].low, ranges[cur].high);
 
     // Reduce at leaf node, accelerated by FPGA
     fpga_kernel(ranges[cur].low, ranges[cur].high, my_min, q);
-
   } else {
     for (int i = 0; i < depth; ++i) putchar('-');
-    printf("[%d]\tleft: %d\tright: %d\t[%d, %d)\n", cur, nodes[cur].left,
-           nodes[cur].right, ranges[cur].low, ranges[cur].high);
+    DEBUG_PRINT("[%d]\tleft: %d\tright: %d\t[%d, %d)\n", cur, nodes[cur].left,
+                nodes[cur].right, ranges[cur].low, ranges[cur].high);
 
     // Reduce at branch node
     const float dist = kernel_func_4f(nodes[cur].point, q);
@@ -435,97 +443,154 @@ typedef struct Fields {
   float q_value;
 } Fields;
 
-int cur_node_stack = 0;
-Fields stack[MAX_STACK_SIZE];
+typedef enum { Finished, Working } ExecuteStatus;
 
-int push_node_stack(const int cur, const Direction dir, const float train,
-                    const float q_value) {
-  ++cur_node_stack;
-  if (cur_node_stack < MAX_STACK_SIZE) {
-    stack[cur_node_stack].cur = cur;
-    stack[cur_node_stack].dir = dir;
-    stack[cur_node_stack].train = train;
-    stack[cur_node_stack].q_value = q_value;
-    return 0;
-  } else {
-    printf("executor stack overflow!!\n");
-    exit(1);
+typedef struct Executor {
+  ExecuteStatus state;
+  float4 q;
+  float my_min;
+  int cur_node_stack;
+  Fields stack[MAX_STACK_SIZE];
+} Executor;
+
+void reset_exe(Executor* exe, const float4 q) {
+  exe->state = Finished;
+  exe->q = q;
+  exe->my_min = FLT_MAX;    // result_set->Reset();
+  exe->cur_node_stack = 0;  // stack_.clear();
+}
+
+void init_exe(Executor* exe) {
+  for (int j = 0; j < MAX_STACK_SIZE; ++j) {
+    exe->stack[j].cur = -1;
+    exe->stack[j].dir = LEFT;
+    exe->stack[j].train = 0.0f;
+    exe->stack[j].q_value = 0.0f;
   }
 }
 
-Fields pop_node_stack(void) { return stack[cur_node_stack--]; }
+int push_node_stack(Executor* exe, const int cur, const Direction dir,
+                    const float train, const float q_value) {
+  ++exe->cur_node_stack;
+  if (exe->cur_node_stack < MAX_STACK_SIZE) {
+    exe->stack[exe->cur_node_stack].cur = cur;
+    exe->stack[exe->cur_node_stack].dir = dir;
+    exe->stack[exe->cur_node_stack].train = train;
+    exe->stack[exe->cur_node_stack].q_value = q_value;
+    return 0;
+  }
+  printf("executor stack overflow!!\n");
+  exit(EXIT_FAILURE);
+}
 
-bool node_stack_empty(void) { return cur_node_stack == 0; }
+Fields pop_node_stack(Executor* exe) {
+  return exe->stack[exe->cur_node_stack--];
+}
 
-void traverse_iterative(const int start_node, const float4 q, float* my_min) {
-  cur_node_stack = 0;
+bool node_stack_empty(const Executor* exe) { return exe->cur_node_stack == 0; }
 
-  int cur = start_node;
+void execute(Executor* exe) {
+  if (exe->state == Working) {
+    goto my_resume_point;
+  }
 
-  while (cur != -1 || !node_stack_empty()) {
+  exe->state = Working;
+  exe->cur_node_stack = 0;
+
+  int cur = 0;
+
+  while (cur != -1 || !node_stack_empty(exe)) {
     while (cur != -1) {
       if (is_leaf(cur)) {
-        printf("[%d]\t[%d, %d)\n", cur, ranges[cur].low, ranges[cur].high);
+        DEBUG_PRINT("(%p) [%d]\t[%d, %d)\n", (void*)exe, cur, ranges[cur].low,
+                    ranges[cur].high);
 
-        fpga_kernel(ranges[cur].low, ranges[cur].high, my_min, q);
+        // **** Accelerated ****
+        fpga_kernel(ranges[cur].low, ranges[cur].high, &exe->my_min, exe->q);
+        // ****************************
+
+        // **** Coroutine Reuturn (API) ****
+        return;
+      my_resume_point:
+        // ****************************
 
         cur = -1;
         continue;
       }
 
-      printf("[%d]\tleft: %d\tright: %d\t[%d, %d)\n", cur, nodes[cur].left,
-             nodes[cur].right, ranges[cur].low, ranges[cur].high);
+      DEBUG_PRINT("(%p) [%d]\tleft: %d\tright: %d\t[%d, %d)\n", (void*)exe, cur,
+                  nodes[cur].left, nodes[cur].right, ranges[cur].low,
+                  ranges[cur].high);
 
       // Reduce at branch node
-      const float dist = kernel_func_4f(nodes[cur].point, q);
-      *my_min = fminf(*my_min, dist);
+      const float dist = kernel_func_4f(nodes[cur].point, exe->q);
+      exe->my_min = fminf(exe->my_min, dist);
 
       const int axis = nodes[cur].axis;
       const float train = get_dim(axis, nodes[cur].point);
-      const float q_value = get_dim(axis, q);
+      const float q_value = get_dim(axis, exe->q);
       const Direction dir = q_value < train ? LEFT : RIGHT;
 
       // Recursion 1
-      push_node_stack(cur, dir, train, q_value);
+      push_node_stack(exe, cur, dir, train, q_value);
       cur = get_child(cur, dir);
     }
 
-    if (!node_stack_empty()) {
+    if (!node_stack_empty(exe)) {
       // pop
-      const Fields last = pop_node_stack();
+      const Fields last = pop_node_stack(exe);
 
       const float diff = kernel_func_1f(last.q_value, last.train);
-      if (diff < *my_min) {
+      if (diff < exe->my_min) {
         // Recursion 2
         cur = get_child(last.cur, flip_dir(last.dir));
       }
     }
   }
   // Done traversals
+  exe->state = Finished;
+}
+
+void start_new_execute(Executor* exe, const float4 q) {
+  reset_exe(exe, q);
+  execute(exe);
 }
 
 int main(void) {
-  const int leaf_size = 1024;
+  const int leaf_size = 32;
   assert(leaf_size >= DUET_LEAF_SIZE);
 
   for (int i = 0; i < N; ++i) in_data[i] = generate_random_float4();
 
-  const int root = BuildTree(in_data, 0, N, leaf_size, 0);
-  printf("num_node_used: %d\n", next_node);
+  BuildTree(in_data, 0, N, leaf_size, 0);
 
-  const float4 q = generate_random_float4();
-  const float gt = ground_truth(in_data, q);
-  printf("gt: %f\n", gt);
+  DEBUG_PRINT("num_node_used: %d\n", next_node);
 
-  float my_min = FLT_MAX;
-  traverse_recursive(root, q, &my_min, 0);
-  printf("my_min: %f\n", my_min);
+  Executor exes[NUM_EXECUTORS];
+  for (int i = 0; i < NUM_EXECUTORS; ++i) {
+    init_exe(&exes[i]);
+  }
 
-  printf("\n");
+  int processed = 0;
+  while (processed < M) {
+    for (int i = 0; i < NUM_EXECUTORS;) {
+      if (exes[i].state == Finished) {
+        // pick a new task
+        const float4 q = generate_random_float4();
 
-  float my_min_2 = FLT_MAX;
-  traverse_iterative(root, q, &my_min_2);
-  printf("my_min2: %f\n", my_min_2);
+        ++processed;
+        start_new_execute(&exes[i], q);
+        ++i;
+      } else {
+        execute(&exes[i]);
+        if (exes[i].state == Finished) {
+          printf("result: %f\n", exes[i].my_min);
+        } else {
+          ++i;
+        }
+      }
+    }
+  }
 
-  return 0;
+  return EXIT_SUCCESS;
 }
