@@ -1,11 +1,14 @@
 CC = gcc
-CFLAGS = -O3 -Wall -Wextra -g 
+CFLAGS = -Wall -Wextra 
+DEBUG_FLAG = -g -DREDWOOD_DEBUG
 
-main: main.o
-	$(CC) $(CFLAGS) main.o -lm
+all: main
 
-main.o: main.c
-	$(CC) $(CFLAGS) -c main.c
+debug: main.c
+	$(CC) $(CFLAGS) $(DEBUG_FLAG) main.c -lm -o debug.out
+
+main: main.c
+	$(CC) $(CFLAGS) -O3 main.c -lm
 
 clean:
 	rm -f a.out main.o
