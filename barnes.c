@@ -1,4 +1,3 @@
-#include <assert.h>
 #include <float.h>
 #include <math.h>
 #include <stdbool.h>
@@ -108,6 +107,15 @@ BoundingBox3D make_box_3d(const float xmin, const float ymin, const float zmin,
   return box;
 }
 
+// (0,0) - (1, 0) - ... (row, 0)
+// (0,1) - (1, 1) - ... (row, 1)
+// ...
+// (0,c) - (1, c) - ... (row, col)
+//
+
+// (x_min, y_min) - (x_mid, y_min) - (x_max, y_min)
+// (x_min, y_mid) - (x_mid, y_mid) - (x_max, y_mid)
+// (x_min, y_max) - (x_mid, y_max) - (x_max, y_max)
 void split_box(const BoundingBox3D* box, BoundingBox3D* sub_boxes) {
   const float x_min = box->x_min;
   const float y_min = box->y_min;
@@ -127,6 +135,40 @@ void split_box(const BoundingBox3D* box, BoundingBox3D* sub_boxes) {
   sub_boxes[6] = make_box_3d(x_min, y_mid, z_mid, x_mid, y_max, z_max);
   sub_boxes[7] = make_box_3d(x_mid, y_mid, z_mid, x_max, y_max, z_max);
 }
+
+// int determine_quadrant(const BoundingBox3D* box, const float x, const float
+// y,
+//                        const float z) {
+//   const float x_mid = (box->x_min + box->x_max) / 2.0f;
+//   const float y_mid = (box->y_min + box->y_max) / 2.0f;
+//   const float z_mid = (box->z_min + box->z_max) / 2.0f;
+
+//   int quadrant;
+//   if (x < x_mid) {
+//     if (y < y_mid) {
+//       if (z < z_mid) {
+//         quadrant = 0;
+//       } else {
+//         quadrant = 1;
+//       }
+//     } else if (z < z_mid) {
+//       quadrant = 2;
+//     } else {
+//       quadrant = 3;
+//     }
+//   } else if (y < y_mid) {
+//     if (z < z_mid) {
+//       quadrant = 4;
+//     } else {
+//       quadrant = 5;
+//     }
+//   } else if (z < z_mid) {
+//     quadrant = 6;
+//   } else {
+//     quadrant = 7;
+//   }
+//   return quadrant;
+// }
 
 int determine_quadrant(const BoundingBox3D* box, const float x, const float y,
                        const float z) {
@@ -186,13 +228,12 @@ typedef struct Range {
 } Range;
 
 // All the data are here
-int next_node = 0;
 BoundingBox3D boxes[MAX_NODES];
 Node nodes[MAX_NODES];
 Range ranges[MAX_NODES];
-
 float4 in_data[N];
 
+int next_node = 0;
 int get_next_node_id(void) { return next_node++; }
 
 typedef struct {
@@ -288,7 +329,7 @@ void compute_center_of_masses(float4* in, const int cur, const int depth) {
   }
 }
 
-int main() {
+int main(void) {
   for (int i = 0; i < N; ++i) in_data[i] = generate_random_float4();
 
   const int root =
@@ -296,7 +337,7 @@ int main() {
 
   compute_center_of_masses(in_data, root, 0);
 
-  printf("%f\n", nodes[0].center_of_mass.w);
+  // printf("%f\n", nodes[0].center_of_mass.w);
 
   return EXIT_SUCCESS;
 }
