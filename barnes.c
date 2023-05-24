@@ -6,85 +6,28 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "utils.h"
+#include "vector_types.h"
+
 // ---------------------------------------------------------------------------
 //  App Constants
 // ---------------------------------------------------------------------------
 
-#ifdef REDWOOD_DEBUG
-#define DEBUG_PRINT_DASH(depth) \
-  for (int j = 0; j < depth; ++j) putchar('-');
-#define DEBUG_PRINT(fmt, ...) printf(fmt, ##__VA_ARGS__)
-#else
-#define DEBUG_PRINT_DASH(depth) \
-  do {                          \
-  } while (0)
-#define DEBUG_PRINT(fmt, ...) \
-  do {                        \
-  } while (0)
-#endif
-
 enum {
   N = 10240,
   M = 8,
-  MAX_NODES = 2048,
+  MAX_NODES = 1024 * 5,
   MAX_STACK_SIZE = 64,
 
-  TREE_BUILD_LEAF_SIZE = 32,
+  TREE_BUILD_LEAF_SIZE = 16,
 
   // how many elements can be processed by the FPGA
   DUET_LEAF_SIZE = 32,
   NUM_EXECUTORS = 2,
 };
 
-// ---------------------------------------------------------------------------
-//  Utils
-// ---------------------------------------------------------------------------
-
-typedef struct float4 {
-  float x, y, z, w;
-} float4;
-
-typedef struct float3 {
-  float x, y, z;
-} float3;
-
-float3 make_float3(const float x, const float y, const float z) {
-  float3 point;
-  point.x = x;
-  point.y = y;
-  point.z = z;
-  return point;
-}
-
-float4 make_float4(const float x, const float y, const float z, const float w) {
-  float4 point;
-  point.x = x;
-  point.y = y;
-  point.z = z;
-  point.w = w;
-  return point;
-}
-
-float4 generate_random_float4(void) {
-  float4 random_float4;
-  random_float4.x = (float)rand() / RAND_MAX * 1000.0f;
-  random_float4.y = (float)rand() / RAND_MAX * 1000.0f;
-  random_float4.z = (float)rand() / RAND_MAX * 1000.0f;
-  random_float4.w = 1.0f;
-  return random_float4;
-}
-
-void float4_add_assign(float4* a, const float4 b) {
-  a->x += b.x;
-  a->y += b.y;
-  a->z += b.z;
-  a->w += b.w;
-}
-
-float4 float4_divide(const float4* a, const float scalar) {
-  return make_float4(a->x / scalar, a->y / scalar, a->z / scalar,
-                     a->w / scalar);
-}
+#define SOFTENING 1e-9f
+#define THETA 0.2f
 
 // ---------------------------------------------------------------------------
 //  Bounding Box 3D
@@ -135,40 +78,6 @@ void split_box(const BoundingBox3D* box, BoundingBox3D* sub_boxes) {
   sub_boxes[6] = make_box_3d(x_min, y_mid, z_mid, x_mid, y_max, z_max);
   sub_boxes[7] = make_box_3d(x_mid, y_mid, z_mid, x_max, y_max, z_max);
 }
-
-// int determine_quadrant(const BoundingBox3D* box, const float x, const float
-// y,
-//                        const float z) {
-//   const float x_mid = (box->x_min + box->x_max) / 2.0f;
-//   const float y_mid = (box->y_min + box->y_max) / 2.0f;
-//   const float z_mid = (box->z_min + box->z_max) / 2.0f;
-
-//   int quadrant;
-//   if (x < x_mid) {
-//     if (y < y_mid) {
-//       if (z < z_mid) {
-//         quadrant = 0;
-//       } else {
-//         quadrant = 1;
-//       }
-//     } else if (z < z_mid) {
-//       quadrant = 2;
-//     } else {
-//       quadrant = 3;
-//     }
-//   } else if (y < y_mid) {
-//     if (z < z_mid) {
-//       quadrant = 4;
-//     } else {
-//       quadrant = 5;
-//     }
-//   } else if (z < z_mid) {
-//     quadrant = 6;
-//   } else {
-//     quadrant = 7;
-//   }
-//   return quadrant;
-// }
 
 int determine_quadrant(const BoundingBox3D* box, const float x, const float y,
                        const float z) {
@@ -313,19 +222,69 @@ void compute_center_of_masses(float4* in, const int cur, const int depth) {
     }
     const int count = ranges[cur].high - ranges[cur].low;
     nodes[cur].center_of_mass = float4_divide(&com, count);
-
   } else {
     for (int i = 0; i < 8; ++i) {
       const int child = nodes[cur].children[i];
       compute_center_of_masses(in, child, depth + 1);
     }
 
+    int num_valid = 0;
     for (int i = 0; i < 8; ++i) {
       const int child = nodes[cur].children[i];
-      float4_add_assign(&com, nodes[child].center_of_mass);
+
+      if (!isnan(nodes[child].center_of_mass.x)) {
+        float4_add_assign(&com, nodes[child].center_of_mass);
+        ++num_valid;
+      }
     }
 
-    nodes[cur].center_of_mass = float4_divide(&com, 8);
+    nodes[cur].center_of_mass = float4_divide(&com, num_valid);
+  }
+}
+
+float compute_theta_value(const int node_id, const float3 q) {
+  const float4 com = nodes[node_id].center_of_mass;
+  float norm_sqr = 1e-9f;
+  const float dx = com.x - q.x;
+  const float dy = com.y - q.y;
+  const float dz = com.z - q.z;
+  norm_sqr += dx * dx + dy * dy + dz * dz;
+  const float norm = sqrtf(norm_sqr);
+  const float geo_size = boxes[node_id].x_max - boxes[node_id].x_min;
+  return geo_size / norm;
+}
+
+float gravity_func_4f(const float4 p, const float3 q) {
+  const float dx = p.x - q.x;
+  const float dy = p.y - q.y;
+  const float dz = p.z - q.z;
+  const float dist_sqr = dx * dx + dy * dy + dz * dz + SOFTENING;
+  const float inv_dist = 1.0f / sqrtf(dist_sqr);
+  const float inv_dist3 = inv_dist * inv_dist * inv_dist;
+  const float with_mass = inv_dist3 * p.w;
+  return dx * with_mass + dy * with_mass + dz * with_mass;
+}
+
+int stats_num_branch_visited = 0;
+int stats_num_leaf_visited = 0;
+int stats_num_elements = 0;
+
+void compute_gravity_at(const float4* in, const int cur, const float3 q,
+                        float* sum) {
+  if (compute_theta_value(cur, q) < THETA) {
+    *sum += gravity_func_4f(nodes[cur].center_of_mass, q);
+    ++stats_num_elements;
+  } else if (nodes[cur].is_leaf) {
+    ++stats_num_leaf_visited;
+    for (int i = ranges[cur].low; i < ranges[cur].high; ++i) {
+      *sum += gravity_func_4f(in[i], q);
+      ++stats_num_elements;
+    }
+  } else {
+    ++stats_num_branch_visited;
+    for (int i = 0; i < 8; ++i) {
+      compute_gravity_at(in, nodes[cur].children[i], q, sum);
+    }
   }
 }
 
@@ -337,7 +296,28 @@ int main(void) {
 
   compute_center_of_masses(in_data, root, 0);
 
-  // printf("%f\n", nodes[0].center_of_mass.w);
+  printf("%f\n", nodes[root].center_of_mass.x);
+  printf("%f\n", nodes[root].center_of_mass.y);
+  printf("%f\n", nodes[root].center_of_mass.z);
+  printf("%f\n", nodes[root].center_of_mass.w);
+
+  float sum = 0.0f;
+  const float3 q = make_float3(500, 500, 500);
+
+  compute_gravity_at(in_data, root, q, &sum);
+
+  printf("sum: %f\n", sum);
+
+  float gt = 0.0f;
+  for (int i = 0; i < N; ++i) {
+    gt += gravity_func_4f(in_data[i], q);
+  }
+
+  printf("gt: %f\n", gt);
+
+  printf("stats_num_branch_visited: %d\n", stats_num_branch_visited);
+  printf("stats_num_leaf_visited: %d\n", stats_num_leaf_visited);
+  printf("stats_num_elements: %d\n", stats_num_elements);
 
   return EXIT_SUCCESS;
 }

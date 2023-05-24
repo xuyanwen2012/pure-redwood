@@ -7,17 +7,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "utils.h"
+#include "vector_types.h"
+
 // ---------------------------------------------------------------------------
 //  App Constants
 // ---------------------------------------------------------------------------
-
-#ifdef REDWOOD_DEBUG
-#define DEBUG_PRINT(fmt, ...) printf(fmt, ##__VA_ARGS__)
-#else
-#define DEBUG_PRINT(fmt, ...) \
-  do {                        \
-  } while (0)
-#endif
 
 enum {
   N = 10240,
@@ -33,19 +28,6 @@ enum {
 // ---------------------------------------------------------------------------
 //  Utils / Tree Node
 // ---------------------------------------------------------------------------
-
-typedef struct float4 {
-  float x, y, z, w;
-} float4;
-
-float4 generate_random_float4(void) {
-  float4 random_float4;
-  random_float4.x = (float)rand() / RAND_MAX * 1000.0f;
-  random_float4.y = (float)rand() / RAND_MAX * 1000.0f;
-  random_float4.z = (float)rand() / RAND_MAX * 1000.0f;
-  random_float4.w = (float)rand() / RAND_MAX * 1000.0f;
-  return random_float4;
-}
 
 typedef enum { LEFT = 0, RIGHT = 1 } Direction;
 
@@ -96,33 +78,6 @@ float get_dim(const int dim, const float4 p) {
   if (dim == 1) return p.y;
   if (dim == 2) return p.z;
   return p.w;
-}
-
-// ---------------------------------------------------------------------------
-//  Duet Related
-// ---------------------------------------------------------------------------
-
-const int kArg = 0;
-const int kPos0X = 1;
-const int kPos0Y = 2;
-const int kPos0Z = 3;
-const int kPos0W = 4;
-const int kFincnt = 5;
-const int kResult = 6;
-const int kNEngine = 1;
-
-// Main entry for Duet
-volatile uint64_t* duet_baseaddr = NULL;
-
-void init_duet() {
-  // No syscalls
-
-  //   // 8k?
-  //   int fd = open("/dev/duet", O_RDWR);
-  //   duet_baseaddr = static_cast<volatile uint64_t*>(mmap(
-  //       nullptr, kNEngine << 13, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd,
-  //       0));
-  // }
 }
 
 // ---------------------------------------------------------------------------
